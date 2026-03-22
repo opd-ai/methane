@@ -103,7 +103,7 @@ go build -o methane ./cmd/methane
 
 | Flag | Default | Description |
 |---|---|---|
-| `--save-file` | `methane.save` | Path to Tox save file |
+| `--save-file` | `methane.tox` | Path to Tox save file |
 | `--name` | `methane-player` | Display name on the Tox network |
 | `--bootstrap` | _(empty)_ | Bootstrap node in `host:port:pubkey` format |
 
