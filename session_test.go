@@ -76,7 +76,8 @@ func TestSession_RecordResult(t *testing.T) {
 	}
 	err := s.RecordResult(result)
 	require.NoError(t, err)
-	assert.Equal(t, InProgress, s.State)
+	// RecordResult transitions directly to Completed.
+	assert.Equal(t, Completed, s.State)
 	assert.Equal(t, OutcomeWin, s.Results[players[0].PublicKeyHex()])
 }
 
@@ -113,4 +114,37 @@ func TestSession_EmptyReadyCheck(t *testing.T) {
 	s := NewGameSession([]*Player{}, ModeFFA)
 	// With no players, IsReadyCheckComplete returns false (len==0).
 	assert.False(t, s.IsReadyCheckComplete())
+	assert.False(t, s.AllPlayersReady())
+}
+
+func TestSession_ReadyCheck_TriState(t *testing.T) {
+	players := makePlayers(2)
+	s := NewGameSession(players, ModeFFA)
+	s.StartReadyCheck(10 * time.Second)
+
+	// No responses yet — not complete.
+	assert.False(t, s.IsReadyCheckComplete())
+	assert.False(t, s.AllPlayersReady())
+
+	// One player declines.
+	s.RecordReadyAck(players[0].PublicKey, false)
+	// Only one responded — not complete.
+	assert.False(t, s.IsReadyCheckComplete())
+
+	// Second player responds ready.
+	s.RecordReadyAck(players[1].PublicKey, true)
+	// Both responded — complete.
+	assert.True(t, s.IsReadyCheckComplete())
+	// But not all ready (player 0 declined).
+	assert.False(t, s.AllPlayersReady())
+}
+
+func TestSession_ReadyDeadline_Stored(t *testing.T) {
+	tp := NewMockTimeProvider(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	s := NewGameSession(makePlayers(2), ModeFFA)
+	s.SetTimeProvider(tp)
+
+	timeout := 15 * time.Second
+	s.StartReadyCheck(timeout)
+	assert.Equal(t, tp.Now().Add(timeout), s.ReadyDeadline)
 }

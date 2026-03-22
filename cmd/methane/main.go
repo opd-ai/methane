@@ -25,64 +25,53 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Common flags.
-	commonFlags := flag.NewFlagSet("common", flag.ContinueOnError)
-	saveFile := commonFlags.String("save-file", "methane.tox", "path to Tox save file")
-	name := commonFlags.String("name", "methane-player", "display name")
-	bootstrap := commonFlags.String("bootstrap", "", "bootstrap node as host:port:pubkey")
-
 	subcommand := os.Args[1]
 	args := os.Args[2:]
 
-	tox, err := initTox(*saveFile, *name, *bootstrap)
-	if err != nil {
-		log.WithError(err).Fatal("failed to initialize Tox")
-	}
-	defer tox.Kill()
-
-	svc := methane.NewMatchmakingService(tox)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := svc.Start(ctx); err != nil {
-		log.WithError(err).Fatal("failed to start service")
-	}
-	defer svc.Stop()
-
 	switch subcommand {
 	case "host":
-		runHost(args, svc, ctx)
+		runHost(args, ctx)
 	case "browse":
-		runBrowse(args, svc, ctx)
+		runBrowse(args, ctx)
 	case "join":
-		runJoin(args, svc)
+		runJoin(args, ctx)
 	case "queue":
-		runQueue(args, svc, ctx)
+		runQueue(args, ctx)
 	case "launch":
-		runLaunch(args, svc)
+		runLaunch(args, ctx)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", subcommand)
 		printUsage()
 		os.Exit(1)
 	}
-
-	_ = commonFlags
 }
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage: methane <subcommand> [flags]
 
 Subcommands:
-  host     --game <name> --mode <mode> --max-players <n> --region <r>
+  host     --game <name> --mode <ffa|tdm|ctf|coop> --max-players <n> --region <any|na|eu|asia>
   browse
   join     <lobby-id>
-  queue    <game-mode>
+  queue    --mode <ffa|tdm|ctf|coop> [--region <any|na|eu|asia>]
   launch   --exec <path>
 
-Common flags:
+Common flags (available in all subcommands):
   --save-file <path>      Tox save file (default: methane.tox)
   --name <name>           Display name (default: methane-player)
   --bootstrap <h:p:key>   Bootstrap node (host:port:pubkey)`)
+}
+
+// addCommonFlags registers the shared --save-file / --name / --bootstrap flags
+// on fs and returns pointers to their values.
+func addCommonFlags(fs *flag.FlagSet) (saveFile, name, bootstrap *string) {
+	saveFile = fs.String("save-file", "methane.tox", "path to Tox save file")
+	name = fs.String("name", "methane-player", "display name")
+	bootstrap = fs.String("bootstrap", "", "bootstrap node as host:port:pubkey")
+	return
 }
 
 func initTox(saveFile, name, bootstrapStr string) (*toxcore.Tox, error) {
@@ -118,13 +107,34 @@ func initTox(saveFile, name, bootstrapStr string) (*toxcore.Tox, error) {
 	return tox, nil
 }
 
-func runHost(args []string, svc *methane.MatchmakingService, ctx context.Context) {
+func newService(saveFile, name, bootstrapStr string, ctx context.Context) (*methane.MatchmakingService, *toxcore.Tox, error) {
+	tox, err := initTox(saveFile, name, bootstrapStr)
+	if err != nil {
+		return nil, nil, err
+	}
+	svc := methane.NewMatchmakingService(tox)
+	if err := svc.Start(ctx); err != nil {
+		tox.Kill()
+		return nil, nil, fmt.Errorf("start service: %w", err)
+	}
+	return svc, tox, nil
+}
+
+func runHost(args []string, ctx context.Context) {
 	fs := flag.NewFlagSet("host", flag.ExitOnError)
+	saveFile, name, bootstrap := addCommonFlags(fs)
 	game := fs.String("game", "MyGame", "game name")
 	mode := fs.String("mode", "ffa", "game mode (ffa, tdm, ctf, coop)")
 	maxPlayers := fs.Int("max-players", 4, "maximum players")
 	region := fs.String("region", methane.RegionAny, "region")
 	_ = fs.Parse(args)
+
+	svc, tox, err := newService(*saveFile, *name, *bootstrap, ctx)
+	if err != nil {
+		log.WithError(err).Fatal("failed to initialize service")
+	}
+	defer tox.Kill()
+	defer svc.Stop()
 
 	cfg := methane.LobbyConfig{
 		GameName:   *game,
@@ -150,8 +160,18 @@ func runHost(args []string, svc *methane.MatchmakingService, ctx context.Context
 	}
 }
 
-func runBrowse(args []string, svc *methane.MatchmakingService, ctx context.Context) {
-	_ = args
+func runBrowse(args []string, ctx context.Context) {
+	fs := flag.NewFlagSet("browse", flag.ExitOnError)
+	saveFile, name, bootstrap := addCommonFlags(fs)
+	_ = fs.Parse(args)
+
+	svc, tox, err := newService(*saveFile, *name, *bootstrap, ctx)
+	if err != nil {
+		log.WithError(err).Fatal("failed to initialize service")
+	}
+	defer tox.Kill()
+	defer svc.Stop()
+
 	svc.OnLobbyFound(func(ad *methane.LobbyAdvertisement) {
 		fmt.Printf("[LOBBY] id=%d game=%s mode=%d players=%d/%d region=%s host=%s\n",
 			ad.LobbyID, ad.GameName, ad.GameMode, ad.CurPlayers, ad.MaxPlayers, ad.Region, ad.HostPK)
@@ -160,15 +180,28 @@ func runBrowse(args []string, svc *methane.MatchmakingService, ctx context.Conte
 	<-ctx.Done()
 }
 
-func runJoin(args []string, svc *methane.MatchmakingService) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: methane join <lobby-id>")
+func runJoin(args []string, ctx context.Context) {
+	fs := flag.NewFlagSet("join", flag.ExitOnError)
+	saveFile, name, bootstrap := addCommonFlags(fs)
+	_ = fs.Parse(args)
+
+	remaining := fs.Args()
+	if len(remaining) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: methane join [--save-file <path>] [--name <name>] [--bootstrap <h:p:key>] <lobby-id>")
 		os.Exit(1)
 	}
-	id, err := strconv.ParseUint(args[0], 10, 32)
+	id, err := strconv.ParseUint(remaining[0], 10, 32)
 	if err != nil {
 		log.WithError(err).Fatal("invalid lobby-id")
 	}
+
+	svc, tox, err := newService(*saveFile, *name, *bootstrap, ctx)
+	if err != nil {
+		log.WithError(err).Fatal("failed to initialize service")
+	}
+	defer tox.Kill()
+	defer svc.Stop()
+
 	// For simplicity, we assume friend 0 is the host.
 	if err := svc.JoinLobby(uint32(id), 0); err != nil {
 		log.WithError(err).Fatal("failed to join lobby")
@@ -176,11 +209,19 @@ func runJoin(args []string, svc *methane.MatchmakingService) {
 	log.WithField("lobby_id", id).Info("join request sent")
 }
 
-func runQueue(args []string, svc *methane.MatchmakingService, ctx context.Context) {
+func runQueue(args []string, ctx context.Context) {
 	fs := flag.NewFlagSet("queue", flag.ExitOnError)
-	mode := fs.String("mode", "ffa", "game mode")
+	saveFile, name, bootstrap := addCommonFlags(fs)
+	mode := fs.String("mode", "ffa", "game mode (ffa, tdm, ctf, coop)")
 	region := fs.String("region", methane.RegionAny, "region")
 	_ = fs.Parse(args)
+
+	svc, tox, err := newService(*saveFile, *name, *bootstrap, ctx)
+	if err != nil {
+		log.WithError(err).Fatal("failed to initialize service")
+	}
+	defer tox.Kill()
+	defer svc.Stop()
 
 	svc.OnMatchFound(func(event *methane.MatchFoundEvent) {
 		fmt.Printf("[MATCH] session=%s players=%d\n", event.SessionID, len(event.Players))
@@ -194,10 +235,18 @@ func runQueue(args []string, svc *methane.MatchmakingService, ctx context.Contex
 	svc.LeaveQueue()
 }
 
-func runLaunch(args []string, _ *methane.MatchmakingService) {
+func runLaunch(args []string, ctx context.Context) {
 	fs := flag.NewFlagSet("launch", flag.ExitOnError)
+	saveFile, name, bootstrap := addCommonFlags(fs)
 	execPath := fs.String("exec", "", "path to game executable")
 	_ = fs.Parse(args)
+
+	svc, tox, err := newService(*saveFile, *name, *bootstrap, ctx)
+	if err != nil {
+		log.WithError(err).Fatal("failed to initialize service")
+	}
+	defer tox.Kill()
+	defer svc.Stop()
 
 	if *execPath == "" {
 		log.Fatal("--exec is required")

@@ -70,9 +70,14 @@ func NewMatchmakingQueue(config *QueueConfig) *MatchmakingQueue {
 }
 
 // SetTimeProvider injects a TimeProvider for deterministic testing.
+// Passing nil resets to the real wall-clock provider.
 func (q *MatchmakingQueue) SetTimeProvider(tp TimeProvider) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if tp == nil {
+		q.tp = RealTimeProvider{}
+		return
+	}
 	q.tp = tp
 }
 
@@ -131,8 +136,13 @@ func (q *MatchmakingQueue) RunOnce() {
 	// Grow rating windows for long-waiting entries.
 	for _, e := range q.entries {
 		elapsed := now.Sub(e.EnqueuedAt)
-		windows := int(elapsed / q.config.QueueTimeout)
-		e.ratingWindow = q.config.RatingWindow + float64(windows)*q.config.WindowGrowth
+		if q.config.QueueTimeout > 0 {
+			windows := int(elapsed / q.config.QueueTimeout)
+			e.ratingWindow = q.config.RatingWindow + float64(windows)*q.config.WindowGrowth
+		} else {
+			// QueueTimeout of zero means no window growth; keep the initial window.
+			e.ratingWindow = q.config.RatingWindow
+		}
 	}
 	groups := q.findMatches()
 	// Remove matched entries.

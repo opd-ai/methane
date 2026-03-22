@@ -69,7 +69,38 @@ type ReadyCheckRequest struct {
 	// SessionID is the session requiring confirmation.
 	SessionID string `json:"session_id"`
 	// Timeout is the duration players have to respond.
-	Timeout time.Duration `json:"timeout"`
+	// It is encoded on the wire as a Go duration string (e.g. "30s") for
+	// readability and cross-implementation compatibility.
+	Timeout time.Duration `json:"-"`
+}
+
+// readyCheckRequestWire is the on-wire JSON representation.
+type readyCheckRequestWire struct {
+	SessionID string `json:"session_id"`
+	Timeout   string `json:"timeout"`
+}
+
+// MarshalJSON encodes Timeout as a human-readable duration string (e.g. "30s").
+func (r ReadyCheckRequest) MarshalJSON() ([]byte, error) {
+	return json.Marshal(readyCheckRequestWire{
+		SessionID: r.SessionID,
+		Timeout:   r.Timeout.String(),
+	})
+}
+
+// UnmarshalJSON decodes a duration string (e.g. "30s") into Timeout.
+func (r *ReadyCheckRequest) UnmarshalJSON(data []byte) error {
+	var w readyCheckRequestWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	d, err := time.ParseDuration(w.Timeout)
+	if err != nil {
+		return fmt.Errorf("invalid timeout duration %q: %w", w.Timeout, err)
+	}
+	r.SessionID = w.SessionID
+	r.Timeout = d
+	return nil
 }
 
 // ReadyCheckResponse is a player's response to a ready-check request.

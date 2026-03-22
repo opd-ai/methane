@@ -96,7 +96,7 @@ go build -o methane ./cmd/methane
 | `methane host` | Create a new game lobby |
 | `methane browse` | List lobbies from all friends |
 | `methane join <lobby-id>` | Join a lobby by ID |
-| `methane queue <game>` | Enter the matchmaking queue for a game |
+| `methane queue --mode <mode>` | Enter the matchmaking queue for a game mode |
 | `methane launch` | Start the configured game executable when matched |
 
 ### Common Flags
@@ -115,16 +115,16 @@ methane host --game "Quake" --mode ffa --max-players 4 --region na \
     --name "HostPlayer" --bootstrap "node.tox.biribiri.org:33445:F404A..."
 
 # Browse lobbies (asks all friends)
-methane browse --save-file player.save
+methane browse --save-file player.tox
 
 # Join a lobby by ID
-methane join 12345 --save-file player.save
+methane join 12345 --save-file player.tox
 
-# Enter matchmaking queue for a game
-methane queue quake --save-file player.save
+# Enter matchmaking queue for FFA (--mode flag required)
+methane queue --mode ffa --region na --save-file player.tox
 
 # Launch game when matched, passing connection info to executable
-methane launch --exec /usr/games/quake --save-file player.save
+methane launch --exec /usr/games/quake --save-file player.tox
 ```
 
 ## Package Structure

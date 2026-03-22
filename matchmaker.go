@@ -17,17 +17,18 @@ import (
 //
 //export MatchmakingService
 type MatchmakingService struct {
-	tox      *toxcore.Tox
-	lobbies  map[uint32]*Lobby
-	sessions map[string]*GameSession
-	queue    *MatchmakingQueue
-	players  map[[32]byte]*Player
-	selfPK   [32]byte
-	logger   *logrus.Logger
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	tp       TimeProvider
+	tox                *toxcore.Tox
+	lobbies            map[uint32]*Lobby
+	sessions           map[string]*GameSession
+	queue              *MatchmakingQueue
+	players            map[[32]byte]*Player
+	selfPK             [32]byte
+	logger             *logrus.Logger
+	mu                 sync.RWMutex
+	ctx                context.Context
+	cancel             context.CancelFunc
+	tp                 TimeProvider
+	autoAcceptFriends  bool // when true, incoming friend requests are accepted automatically
 
 	// Callbacks
 	onMatchFound func(*MatchFoundEvent)
@@ -62,10 +63,25 @@ func NewMatchmakingService(tox *toxcore.Tox) *MatchmakingService {
 	return svc
 }
 
-// SetTimeProvider injects a TimeProvider for testing.
+// SetAutoAcceptFriends controls whether the service automatically accepts
+// every incoming Tox friend request. It is disabled by default; callers should
+// enable it only when they trust the discovery environment (e.g. a closed LAN
+// lobby). When disabled, friend requests are silently ignored and applications
+// must call tox.AddFriendByPublicKey themselves.
+func (s *MatchmakingService) SetAutoAcceptFriends(accept bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoAcceptFriends = accept
+}
+
+// SetTimeProvider injects a TimeProvider for deterministic testing.
+// Passing nil resets to the real wall-clock provider.
 func (s *MatchmakingService) SetTimeProvider(tp TimeProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if tp == nil {
+		tp = RealTimeProvider{}
+	}
 	s.tp = tp
 	s.queue.SetTimeProvider(tp)
 }
@@ -141,6 +157,13 @@ func (s *MatchmakingService) runLoop() {
 // registerToxCallbacks sets up all Tox event handlers.
 func (s *MatchmakingService) registerToxCallbacks() {
 	s.tox.OnFriendRequest(func(publicKey [32]byte, message string) {
+		s.mu.RLock()
+		accept := s.autoAcceptFriends
+		s.mu.RUnlock()
+		if !accept {
+			s.logger.WithField("pk", hex.EncodeToString(publicKey[:])).Debug("friend request received; auto-accept disabled – ignoring")
+			return
+		}
 		s.logger.WithField("pk", hex.EncodeToString(publicKey[:])).Debug("friend request received; auto-accepting")
 		if _, err := s.tox.AddFriendByPublicKey(publicKey); err != nil {
 			s.logger.WithError(err).Warn("auto-accept friend request failed")
@@ -200,6 +223,8 @@ func (s *MatchmakingService) handleLobbyAd(env *Envelope) {
 }
 
 // handleMatchFound processes a received match-found notification.
+// It creates a local GameSession record so that subsequent ready-check and
+// game-result messages can be correlated to this session.
 func (s *MatchmakingService) handleMatchFound(env *Envelope) {
 	var msg MatchFoundMessage
 	if err := DecodePayload(env, &msg); err != nil {
@@ -216,9 +241,32 @@ func (s *MatchmakingService) handleMatchFound(env *Envelope) {
 		copy(pk[:], pkBytes)
 		players = append(players, s.GetOrCreatePlayer(pk))
 	}
+
+	// Create (or reuse) a session record so that ready-check and result
+	// messages for this session can be processed by this node.
+	// Read tp and check existence without holding the write lock to keep
+	// the critical section short.
 	s.mu.RLock()
-	cb := s.onMatchFound
+	tp := s.tp
+	_, exists := s.sessions[msg.SessionID]
 	s.mu.RUnlock()
+
+	var cb func(*MatchFoundEvent)
+	if !exists {
+		session := newGameSessionWithID(msg.SessionID, players, msg.GameMode, tp)
+		s.mu.Lock()
+		// Re-check under write lock to guard against a concurrent insert.
+		if _, alreadyInserted := s.sessions[msg.SessionID]; !alreadyInserted {
+			s.sessions[msg.SessionID] = session
+		}
+		cb = s.onMatchFound
+		s.mu.Unlock()
+	} else {
+		s.mu.RLock()
+		cb = s.onMatchFound
+		s.mu.RUnlock()
+	}
+
 	if cb != nil {
 		cb(&MatchFoundEvent{SessionID: msg.SessionID, Players: players})
 	}
@@ -432,9 +480,15 @@ func (s *MatchmakingService) ListLobbies() []*Lobby {
 	return out
 }
 
-// EnqueueForMatch adds the local player to the matchmaking queue.
+// EnqueueForMatch adds the local player to the matchmaking queue for the given
+// mode and region. It also updates the player's stored preferences so that
+// handleMatchFormed can correctly record the session's GameMode.
 func (s *MatchmakingService) EnqueueForMatch(mode GameMode, region string) error {
 	self := s.GetSelfPlayer()
+	self.mu.Lock()
+	self.Preferences.GameMode = mode
+	self.Preferences.Region = region
+	self.mu.Unlock()
 	return s.queue.Enqueue(self, mode, region)
 }
 
