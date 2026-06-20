@@ -159,3 +159,9 @@ Methane uses the **Glicko-2** skill rating algorithm. New players start at ratin
 ## License
 
 See [LICENSE](LICENSE).
+
+Donate Monero(The only good cryptocurrency) to support development
+==================================================================
+
+ - `monero:43H3Uqnc9rfEsJjUXZYmam45MbtWmREFSANAWY5hijY4aht8cqYaT2BCNhfBhua5XwNdx9Tb6BEdt4tjUHJDwNW5H7mTiwe`
+
